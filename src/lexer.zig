@@ -1,23 +1,10 @@
 const std = @import("std");
 const mem = std.mem;
+const log = std.log.scoped(.lexer);
 
 const Tokens = @import("token.zig");
 const Token = Tokens.Token;
 const TokenType = Tokens.TokenType;
-
-fn is_self_closing(identifier: []const u8) bool {
-    const self_closing_tags = [_][]const u8{
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
-    };
-
-    inline for (self_closing_tags) |tag| {
-        if (mem.eql(u8, identifier, tag)) {
-            return true;
-        }
-    }
-
-    return false;
-}
 
 pub const Lexer = struct {
     allocator: mem.Allocator,
@@ -36,19 +23,19 @@ pub const Lexer = struct {
         };
     }
 
-    fn eof(self: *Self) bool {
+    pub fn eof(self: *Self) bool {
         return self.current_pos >= self.source.len - 1;
     }
 
-    fn is_whitespace(self: *Self) bool {
+    pub fn is_whitespace(self: *Self) bool {
         return std.ascii.isWhitespace(self.source[self.current_pos]);
     }
 
-    fn is_char_at(self: *Self, c: u8, index: usize) bool {
+    pub fn is_char_at(self: *Self, c: u8, index: usize) bool {
         return self.source[index] == c;
     }
 
-    fn chop_char(self: *Self) ?u8 {
+    pub fn chop_char(self: *Self) ?u8 {
         if (self.eof()) {
             return null;
         }
@@ -68,89 +55,33 @@ pub const Lexer = struct {
 
     pub fn lex(self: *Self) !void {
         outer: while (self.chop_char()) |c| {
+            // Some html tag
             if (c == '<') {
                 // Doctype decl
                 if (self.is_char_at('!', self.current_pos)) {
                     self.current_pos += 1;
-                    const start = self.current_pos;
-                    const doctype: []const u8 = "DOCTYPE";
-                    const slice: []const u8 = self.source[start .. start + doctype.len];
-
-                    if (std.mem.eql(u8, slice, doctype)) {
-                        self.current_pos += doctype.len;
-                        while (!self.eof() and !self.is_char_at('>', self.current_pos)) {
-                            if (self.is_char_at('\n', self.current_pos)) {
-                                @panic("Unexpected newline in doctype declaration\n");
-                            }
-                            self.current_pos += 1;
-                        }
-                        try self.tokens.append(Token{
-                            .start = start - 2, // '<!' already consumed,
-                            .end = self.current_pos,
-                            .type = TokenType.DoctypeDecl,
-                            .value = null,
-                        });
-
-                        continue :outer;
-                    }
+                    const token = Tokens.forDocTypeDecl(self);
+                    try self.tokens.append(token);
+                    continue :outer;
                 }
 
+                // Closing Tag
                 if (self.is_char_at('/', self.current_pos)) {
                     self.current_pos += 1;
-                    const start = self.current_pos;
-                    while (!self.eof() and !self.is_char_at('>', self.current_pos)) {
-                        if (self.is_char_at('\n', self.current_pos)) {
-                            @panic("Unexpected newline in closing tag\n");
-                        }
-                        self.current_pos += 1;
-                    }
-
-                    try self.tokens.append(Token{
-                        .start = start, // '<' already consumed,
-                        .end = self.current_pos,
-                        .type = TokenType.CloseTag,
-                        .value = self.source[start..self.current_pos],
-                    });
-
+                    const token = Tokens.forClosingTag(self);
+                    try self.tokens.append(token);
                     continue :outer;
                 }
 
-                if (!std.ascii.isAlphanumeric(self.source[self.current_pos])) {
-                    std.debug.panic("Expected identifier after '<', found {c}\n", .{self.source[self.current_pos]});
-                }
-
-                const start = self.current_pos;
-                while (std.ascii.isAlphanumeric(self.source[self.current_pos])) {
-                    self.current_pos += 1;
-                }
-
-                if (self.eof()) {
-                    std.debug.panic("Unexpected EOF\n", .{});
-                }
-
-                const end = self.current_pos;
-                const identifier = self.source[start..end];
-
-                if (is_self_closing(identifier)) {
-                    try self.tokens.append(Token{
-                        .start = start,
-                        .end = end,
-                        .type = TokenType.SelfClosingTag,
-                        .value = identifier,
-                    });
-                    continue :outer;
-                }
-
-                try self.tokens.append(Token{
-                    .start = start,
-                    .end = end,
-                    .type = TokenType.OpenTag,
-                    .value = identifier,
-                });
+                // Opening Tag
+                const token = Tokens.forOpeningTag(self);
+                try self.tokens.append(token);
 
                 continue :outer;
             }
 
+            // Opening or Closing tag end can be followed
+            // by arbitrary text
             if (c == '>') {
                 const start = self.current_pos;
                 while (!self.eof() and !self.is_char_at('<', self.current_pos)) {
